@@ -1,4 +1,7 @@
 *.ipynb_checkpoints/*
 */__pycache__/*
 */.idea/*
+*/test/*
+*/venv_new_tensorflow/*
+
 
