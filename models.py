@@ -22,6 +22,7 @@ class Model1(object):
         self.session = session
         self.device = device
 
+        self.max_seq_length = 30
         # batch_genrator variables
         self.index = 0
         self.batch_size = 64
@@ -35,8 +36,8 @@ class Model1(object):
     def construct_model(self):
         with tf.device(self.device):
             # seq_lenght?
-            self.inputs = tf.placeholder(tf.int32, [self.batch_size, ])
-            self.targets = tf.placeholder(tf.int32, [self.batch_size, ])
+            self.inputs = tf.placeholder(tf.int32, [self.batch_size, self.max_seq_length])
+            self.targets = tf.placeholder(tf.int32, [self.batch_size, self.max_seq_length])
             self.target_lengths = tf.placeholder(tf.int32, [self.batch_size])
             self.embedding_init = tf.placeholder(tf.float32, [self.vocabulary_size, self.embeddings_dim])
             self.embedded_inputs = tf.nn.embedding_lookup(self.embedding_init, self.inputs)
@@ -47,7 +48,10 @@ class Model1(object):
     def initialize(self):
         self.session.run(tf.global_variables_initializer())
 
+
     def data_preprocessing(self, data):
+        # TODO fix problem here. zero pad sequences with less than max_seq_lenght and concat results of each step of
+        # for-loop
         global target_sequences, input_sequences
         for i in range(len(data)):
             lenght = len(data[i])
@@ -56,6 +60,14 @@ class Model1(object):
             # first element of each list has no previous sequence
             target_sequences = np.array(data[i][1:])
         corpus_size = input_sequences.shape[0]
+        print(input_sequences)
+        print(input_sequences[99])
+        for i in range(input_sequences.shape[0]):
+            if len(input_sequences[i]) > self.max_seq_length:
+                input_sequences[i] = np.array(input_sequences[i][:self.max_seq_length])
+            if len(target_sequences[i]) > self.max_seq_length:
+                target_sequences[i] = np.array(target_sequences[i][:self.max_seq_length])
+
         return input_sequences, target_sequences, corpus_size
 
     def next_batch(self):
