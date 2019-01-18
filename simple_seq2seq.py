@@ -286,3 +286,5 @@ class SimpleLSTMDecoderWithSelfAttention(object):
             impute_finished=True,
             maximum_iterations=40)
         return outputs, state
+
+tokenizer = tokenization.FullTokenizer()
