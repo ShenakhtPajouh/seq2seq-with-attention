@@ -3,6 +3,7 @@ import pickle
 from simple_seq2seq import *
 import tensorflow as tf
 import numpy as np
+from random import randint
 
 
 class Model1(object):
@@ -10,8 +11,6 @@ class Model1(object):
                  num_units=512,
                  device="cpu:0",
                  construct_model=True):
-        # corpus
-        self.input_sequences, self.target_sequences, self.corpus_size = self.data_preprocessing(data)
 
         self.vocabulary_size = vocabulary_size
         self.dictionary = dictionary
@@ -29,6 +28,9 @@ class Model1(object):
 
         self.num_units = num_units
 
+        # corpus
+        self.input_sequences, self.target_sequences, self.corpus_size = self.data_preprocessing(data)
+
         # Model
         if construct_model:
             self.construct_model()
@@ -42,32 +44,44 @@ class Model1(object):
             self.embedding_init = tf.placeholder(tf.float32, [self.vocabulary_size, self.embeddings_dim])
             self.embedded_inputs = tf.nn.embedding_lookup(self.embedding_init, self.inputs)
             self.embedded_targets = tf.nn.embedding_lookup(self.embedding_init, self.targets)
-            self.encoder = SimpleLSTMEncoder(num_units=512, batch_size=64, depth=1)
-            self.decoder = SimpleLSTMDecoder(num_units=512, batch_size=64, depth=1)
+
+            self.encoder = SimpleLSTMEncoder(num_units=512, batch_size=64, depth=2)
+            # for the purpose of weight sharing
+            self.decoder = SimpleLSTMDecoder(num_units=512, cell=self.encoder.get_cell(), batch_size=64, depth=None)
 
     def initialize(self):
         self.session.run(tf.global_variables_initializer())
 
-
     def data_preprocessing(self, data):
         # TODO fix problem here. zero pad sequences with less than max_seq_lenght and concat results of each step of
+        # target and input are seperated for the sake of generality. in this case it is more memory efficient to use
+        #  from a single list
         # for-loop
-        global target_sequences, input_sequences
+        target_sequences, input_sequences = [[1]], [[2]]
         for i in range(len(data)):
             lenght = len(data[i])
             # last sequence of each list has no following sequence
-            input_sequences = np.array(data[i][:lenght - 1])
+            input_sequences += data[i][:lenght - 1]
             # first element of each list has no previous sequence
-            target_sequences = np.array(data[i][1:])
-        corpus_size = input_sequences.shape[0]
-        print(input_sequences)
+            target_sequences += data[i][1:]
+        corpus_size = len(input_sequences)
         print(input_sequences[99])
-        for i in range(input_sequences.shape[0]):
+        for i in range(corpus_size):
             if len(input_sequences[i]) > self.max_seq_length:
                 input_sequences[i] = np.array(input_sequences[i][:self.max_seq_length])
+            # zero padding
+            elif len(input_sequences[i]) < self.max_seq_length:
+                zeros_ = [0 for i in range(self.max_seq_length - len(input_sequences[i]))]
+                input_sequences[i] = np.array(input_sequences[i] + zeros_)
             if len(target_sequences[i]) > self.max_seq_length:
                 target_sequences[i] = np.array(target_sequences[i][:self.max_seq_length])
-
+            # zero padding
+            elif len(target_sequences[i]) < self.max_seq_length:
+                zeros_ = [0 for i in range(self.max_seq_length - len(target_sequences[i]))]
+                target_sequences[i] = np.array(target_sequences[i] + zeros_)
+        input_sequences, target_sequences = np.array(input_sequences), np.array(target_sequences)
+        print(input_sequences.shape)
+        print(target_sequences.shape)
         return input_sequences, target_sequences, corpus_size
 
     def next_batch(self):
@@ -79,7 +93,9 @@ class Model1(object):
                 [next_target_batch[i].shape[0] for i in range(
                     next_target_batch.shape[0]
                 )], dtype=np.int32)
+            print(target_batch_lengths)
             self.index = self.index + 1
+            print(target_batch_lengths)
         return next_input_batch, next_target_batch, target_batch_lengths
 
     # TODO separate model from train.
@@ -87,30 +103,47 @@ class Model1(object):
         with tf.device(self.device):
             with tf.Session.as_default(self.session):
                 output, final_state = self.encoder(self.embedded_inputs)
-                final_outputs, final_state, final_sequence_lengths = self.decoder({
-                    'mode': 'train',
-                    'initial_state': final_state,
-                    'input': self.embedded_targets,
-                    'input_lengths': self.target_lengths
-                })
+                # final_outputs, final_state, final_sequence_lengths = self.decoder({
+                #     'mode': 'train',
+                #     'initial_state': final_state,
+                #     'input': self.embedded_targets,
+                #     'input_lengths': self.target_lengths,
+                #     'embeddings': None,
+                #     'special_symbols': None
+                # })
+                print(type(self.target_lengths))
+                final_outputs, final_state, final_sequence_lengths = self.decoder.call(
+                    mode='train',
+                    initial_state=final_state,
+                    inputs=self.embedded_targets,
+                    input_lengths=self.target_lengths
+                )
+
                 mask = tf.to_float(tf.sequence_mask(self.target_lengths))
-                loss = tf.reduce_mean(tf.contrib.seq2seq.sequence_loss(logits=final_outputs.rnn_output,
-                                                                       targets=self.embedded_targets, weights=mask,
+                print(final_outputs.rnn_output)
+
+                _loss = tf.reduce_mean(tf.contrib.seq2seq.sequence_loss(logits=final_outputs.rnn_output,
+                                                                       targets=self.targets, weights=mask,
                                                                        average_across_timesteps=True,
                                                                        average_across_batch=True))
+                # setting the lr
+                optimizer = tf.train.AdamOptimizer(learning_rate=0.005, epsilon=0.01).minimize(_loss)
                 self.session.run(tf.global_variables_initializer())
-                optimizer = tf.train.AdamOptimizer(learning_rate=0.005, epsilon=0.01).minimize(loss)
+
                 for step in range(self.corpus_size - self.batch_size - 1):
                     next_input_batch, next_target_batch, target_batch_lengths = self.next_batch()
+                    print(type(self.targets))
                     feed_dict = {self.targets: next_target_batch, self.inputs: next_input_batch,
                                  self.target_lengths: target_batch_lengths, self.embedding_init: self.embeddings}
-                    loss, _ = self.session.run([loss, optimizer], feed_dict=feed_dict)
+                    loss, _ = self.session.run([_loss, optimizer], feed_dict=feed_dict)
                     print('Average loss at step ', step, ': ', loss)
 
 
-with open("stories.pkl", 'rb') as file:
-    data = pickle.load(file)
-    file.close()
+# with open("stories.pkl", 'rb') as file:
+#     data = pickle.load(file)
+#     file.close()
+
+data = [[[k for k in range(randint(0, j))] for j in range(randint(0, i))] for i in range(100)]
 with open('embeddings_table.pkl', 'rb') as file:
     embeddings = pickle.load(file)
     file.close()

@@ -1,4 +1,5 @@
 import tensorflow as tf
+from tensorflow.python.layers.core import Dense
 
 
 class SimpleLSTMEncoder(object):
@@ -19,6 +20,7 @@ class SimpleLSTMEncoder(object):
         self.dropout_probability = dropout_probability
         self.num_units = num_units
         self.batch_size = batch_size
+        self.cell = self.cell()
 
     def cell(self):
         cell = tf.nn.rnn_cell.LSTMCell(num_units=self.num_units, use_peepholes=True, forget_bias=1.0)
@@ -26,6 +28,9 @@ class SimpleLSTMEncoder(object):
                                     .DropoutWrapper(cell, output_keep_prob=self.dropout_probability) for j in
                                      range(self.depth)])
         return cell
+
+    def get_cell(self):
+        return self.cell
 
     def __call__(self, input_seq):
         """
@@ -38,7 +43,7 @@ class SimpleLSTMEncoder(object):
         Returns:
             outputs: a Tensor shaped: [batch_size, max_time, cell.output_size].
         """
-        outputs, state = tf.nn.dynamic_rnn(cell=self.cell(), inputs=input_seq, dtype=tf.float32,
+        outputs, state = tf.nn.dynamic_rnn(cell=self.cell, inputs=input_seq, dtype=tf.float32,
                                            parallel_iterations=1024)
         return outputs, state
 
@@ -48,11 +53,15 @@ class SimpleLSTMDecoder(object):
     Simply uses the last hidden state of encoder to create decoded sequence.
     """
 
-    def __init__(self, num_units, batch_size, depth=1, dropout_probability=0.5):
+    def __init__(self, num_units, batch_size, cell=None, depth=1, dropout_probability=0.5):
         self.depth = depth
         self.dropout_probability = dropout_probability
         self.num_units = num_units
         self.batch_size = batch_size
+        if cell is None:
+            self.cell = self.cell()
+        else:
+            self.cell = cell
 
     def cell(self):
         cell = tf.nn.rnn_cell.LSTMCell(num_units=self.num_units, use_peepholes=True, forget_bias=1.0)
@@ -61,7 +70,8 @@ class SimpleLSTMDecoder(object):
                                      range(self.depth)])
         return cell
 
-    def call(self, mode, initial_state, input, input_lengths, embeddings, special_symbols):
+    def call(self, mode, initial_state, inputs, input_lengths#, embeddings, special_symbols
+     ):
         """
         Description:
 
@@ -78,23 +88,23 @@ class SimpleLSTMDecoder(object):
             outputs: a Tensor shaped: [batch_size, max_time, cell.output_size].
         """
 
+        output_logits = Dense(30522, use_bias=False)
         global helper
-        cell = self.cell()
-        start_symbol, end_symbol = special_symbols[0], special_symbols[1]
         if mode == "train":
             helper = tf.contrib.seq2seq.TrainingHelper(
-                input=input,
+                inputs=inputs,
                 sequence_length=input_lengths)
-        elif mode == "infer":
-            helper = tf.contrib.seq2seq.GreedyEmbeddingHelper(
-                embedding=embeddings,
-                start_tokens=tf.tile([start_symbol], [self.batch_size]),
-                end_token=end_symbol)
+        # elif mode == "infer":
+            # helper = tf.contrib.seq2seq.GreedyEmbeddingHelper(
+            #     embedding=embeddings,
+            #     start_tokens=tf.tile([special_symbols[0]], [self.batch_size]),
+            #     end_token=special_symbols[1])
 
         decoder = tf.contrib.seq2seq.BasicDecoder(
-            cell=cell,
+            cell=self.cell,
             helper=helper,
-            initial_state=initial_state)
+            initial_state=initial_state,
+            output_layer=output_logits)
         final_outputs, final_state, final_sequence_lengths = tf.contrib.seq2seq.dynamic_decode(
             decoder=decoder,
             impute_finished=True,
@@ -145,7 +155,6 @@ class LSTMDecoderWithAttention(object):
 
         global helper
         cell = self.cell()
-        start_symbol, end_symbol = special_symbols[0], special_symbols[1]
         if mode == "train":
             helper = tf.contrib.seq2seq.TrainingHelper(
                 inputs=inputs,
@@ -153,8 +162,8 @@ class LSTMDecoderWithAttention(object):
         elif mode == "infer":
             helper = tf.contrib.seq2seq.GreedyEmbeddingHelper(
                 embedding=embeddings,
-                start_tokens=tf.tile([start_symbol], [self.batch_size]),
-                end_token=end_symbol)
+                start_tokens=tf.tile([special_symbols[0]], [self.batch_size]),
+                end_token=special_symbols[1])
 
         attention_mechanism = tf.contrib.seq2seq.BahdanauAttention(
             num_units=self.num_units,
@@ -235,7 +244,6 @@ class LSTMDecoderWithSelfAttention(object):
 
         global helper
         cell = self.cell()
-        start_symbol, end_symbol = special_symbols[0], special_symbols[1]
         if mode == "train":
             helper = TrainingHelperWithMemory(
                 inputs=inputs,
@@ -243,8 +251,8 @@ class LSTMDecoderWithSelfAttention(object):
         elif mode == "infer":
             helper = tf.contrib.seq2seq.GreedyEmbeddingHelper(
                 embedding=embeddings,
-                start_tokens=tf.tile([start_symbol], [self.batch_size]),
-                end_token=end_symbol)
+                start_tokens=tf.tile([special_symbols[0]], [self.batch_size]),
+                end_token=special_symbols[1])
         """Attention on encoder states"""
         attention_mechanism = tf.contrib.seq2seq.BahdanauAttention(
             num_units=self.num_units,
@@ -277,5 +285,3 @@ class LSTMDecoderWithSelfAttention(object):
             impute_finished=True,
             maximum_iterations=40)
         return final_outputs, final_state, final_sequence_lengths
-
-
