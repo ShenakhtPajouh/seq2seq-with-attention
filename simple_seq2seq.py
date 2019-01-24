@@ -108,7 +108,8 @@ class SimpleLSTMDecoder(object):
         final_outputs, final_state, final_sequence_lengths = tf.contrib.seq2seq.dynamic_decode(
             decoder=decoder,
             impute_finished=True,
-            maximum_iterations=40)
+            maximum_iterations=50)
+        print(final_outputs.rnn_output)
         return final_outputs, final_state, final_sequence_lengths
 
     def __call__(self, *args, **kwargs):
