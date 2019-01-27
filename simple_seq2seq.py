@@ -20,16 +20,19 @@ class SimpleLSTMEncoder(object):
         self.dropout_probability = dropout_probability
         self.num_units = num_units
         self.batch_size = batch_size
-        self.cell = self.cell()
 
-    def cell(self):
-        cell = tf.nn.rnn_cell.LSTMCell(num_units=self.num_units, use_peepholes=True, forget_bias=1.0)
-        tf.nn.rnn_cell.MultiRNNCell([tf.nn.rnn_cell
-                                    .DropoutWrapper(cell, output_keep_prob=self.dropout_probability) for j in
-                                     range(self.depth)])
-        return cell
+        self.cell =self.cell_list()
+
+    def cell_(self):
+        cell = tf.nn.rnn_cell.LSTMCell(num_units=self.num_units, use_peepholes=True, forget_bias=1.0,
+                                       state_is_tuple=True)
+        return tf.nn.rnn_cell.DropoutWrapper(cell, output_keep_prob=self.dropout_probability)
+
+    def cell_list(self):
+        return [self.cell_() for _ in range(self.depth)]
 
     def get_cell(self):
+        print(self.cell)
         return self.cell
 
     def __call__(self, input_seq):
@@ -43,9 +46,71 @@ class SimpleLSTMEncoder(object):
         Returns:
             outputs: a Tensor shaped: [batch_size, max_time, cell.output_size].
         """
-        outputs, state = tf.nn.dynamic_rnn(cell=self.cell, inputs=input_seq, dtype=tf.float32,
-                                           parallel_iterations=1024)
+        self.cell = tf.nn.rnn_cell.MultiRNNCell(self.cell)
+        outputs, state = tf.nn.dynamic_rnn(cell=self.cell, inputs=input_seq, dtype=tf.float32)
         return outputs, state
+
+    def call8888(self, mode, initial_state, encoder_memory, inputs, input_lengths  # , embeddings, special_symbols
+             ):
+        """
+        Description:
+
+        Args:
+            mode: A string, can either be "train" or infer
+            initial_state: initial state of decoder
+            input: (in case of mode=="train") A Tensor of shape [batch_size, TODO: ?
+            input_lengths: (in case of mode=="train") A vector. Lengths of each sequence in a batch
+            embeddings: (in case of mode=="infer") Embedding look-up table of shape [vocabulary_size, embedding_dim]
+            special_symbols: (in case of mode=="infer") A tuple of form (start_symbol, end_symbol) with dtype tf.int32,
+             place of mentioned symbols in embeddings
+
+        Returns:
+            outputs: a Tensor shaped: [batch_size, max_time, cell.output_size].
+        """
+        print(self.cell)
+        cell = self.cell
+        output_logits = Dense(30522, use_bias=False)
+        global helper
+        if mode == "train":
+            helper = tf.contrib.seq2seq.TrainingHelper(
+                inputs=inputs,
+                sequence_length=input_lengths)
+        # elif mode == "infer":
+        # helper = tf.contrib.seq2seq.GreedyEmbeddingHelper(
+        #     embedding=embeddings,
+        #     start_tokens=tf.tile([special_symbols[0]], [self.batch_size]),
+        #     end_token=special_symbols[1])
+
+        attention_mechanism = tf.contrib.seq2seq.BahdanauAttention(
+            num_units=50,
+            memory=encoder_memory,
+            normalize=True)
+
+        cell[-1] = tf.contrib.seq2seq.AttentionWrapper(
+            cell=cell[-1],
+            attention_mechanism=attention_mechanism,
+            alignment_history=False,
+            initial_cell_state=initial_state[-1])
+
+        initial_state = [state for state in initial_state]
+        initial_state[-1] =cell[-1].zero_state(
+            batch_size=self.batch_size, dtype=tf.float32)
+        decoder_initial_state = tuple(initial_state)
+
+        cell = tf.nn.rnn_cell.MultiRNNCell(cell)
+
+        decoder = tf.contrib.seq2seq.BasicDecoder(
+            cell=cell,
+            helper=helper,
+            initial_state=decoder_initial_state,
+            output_layer=output_logits)
+
+        final_outputs, final_state, final_sequence_lengths = tf.contrib.seq2seq.dynamic_decode(
+            decoder=decoder,
+            impute_finished=True,
+            maximum_iterations=50)
+        return final_outputs, final_state, final_sequence_lengths
+
 
 
 class SimpleLSTMDecoder(object):
@@ -59,19 +124,19 @@ class SimpleLSTMDecoder(object):
         self.num_units = num_units
         self.batch_size = batch_size
         if cell is None:
-            self.cell = self.cell()
+            self.cell = self.cell_list()
         else:
             self.cell = cell
 
-    def cell(self):
+    def cell_(self):
         cell = tf.nn.rnn_cell.LSTMCell(num_units=self.num_units, use_peepholes=True, forget_bias=1.0)
-        tf.nn.rnn_cell.MultiRNNCell([tf.nn.rnn_cell
-                                    .DropoutWrapper(cell, output_keep_prob=self.dropout_probability) for j in
-                                     range(self.depth)])
-        return cell
+        return tf.nn.rnn_cell.DropoutWrapper(cell, output_keep_prob=self.dropout_probability)
 
-    def call(self, mode, initial_state, inputs, input_lengths#, embeddings, special_symbols
-     ):
+    def cell_list(self):
+        return [self.cell_() for _ in range(self.depth)]
+
+    def call(self, mode, initial_state, inputs, input_lengths  # , embeddings, special_symbols
+             ):
         """
         Description:
 
@@ -95,13 +160,14 @@ class SimpleLSTMDecoder(object):
                 inputs=inputs,
                 sequence_length=input_lengths)
         # elif mode == "infer":
-            # helper = tf.contrib.seq2seq.GreedyEmbeddingHelper(
-            #     embedding=embeddings,
-            #     start_tokens=tf.tile([special_symbols[0]], [self.batch_size]),
-            #     end_token=special_symbols[1])
+        # helper = tf.contrib.seq2seq.GreedyEmbeddingHelper(
+        #     embedding=embeddings,
+        #     start_tokens=tf.tile([special_symbols[0]], [self.batch_size]),
+        #     end_token=special_symbols[1])
 
+        cell = tf.nn.rnn_cell.MultiRNNCell(self.cell)
         decoder = tf.contrib.seq2seq.BasicDecoder(
-            cell=self.cell,
+            cell=cell,
             helper=helper,
             initial_state=initial_state,
             output_layer=output_logits)
@@ -118,32 +184,35 @@ class SimpleLSTMDecoder(object):
 
 class LSTMDecoderWithAttention(object):
     """
-    Simply uses the last hidden state of encoder to create decoded
-    sequence with attention on its own past hidden states.
+    Simply uses the last hidden state of encoder to create decoded sequence.
     """
 
-    def __init__(self, num_units, batch_size, depth=1, dropout_probability=0.5):
+    def __init__(self, num_units, batch_size, cell=None, depth=1, dropout_probability=0.5):
         self.depth = depth
         self.dropout_probability = dropout_probability
         self.num_units = num_units
         self.batch_size = batch_size
+        if cell is not None:
+            self.cell = self.cell_list()
+        else:
+            self.cell = cell[::-1]
 
-    def cell(self):
-        cell = tf.nn.rnn_cell.LSTMCell(
-            num_units=self.num_units, use_peepholes=True, forget_bias=1.0)
-        tf.nn.rnn_cell.MultiRNNCell(
-            [tf.nn.rnn_cell.DropoutWrapper(
-                cell, output_keep_prob=self.dropout_probability) for j in range(self.depth)])
-        return cell
 
-    def call(self, mode, initial_state, encoder_memory, inputs, input_lengths, embeddings, special_symbols):
+    def cell_(self):
+        cell = tf.nn.rnn_cell.LSTMCell(num_units=self.num_units, use_peepholes=True, forget_bias=1.0)
+        return tf.nn.rnn_cell.DropoutWrapper(cell, output_keep_prob=self.dropout_probability)
+
+    def cell_list(self):
+        return [self.cell_() for _ in range(self.depth)]
+
+    def call(self, mode, initial_state, encoder_memory, inputs, input_lengths  # , embeddings, special_symbols
+             ):
         """
         Description:
 
         Args:
             mode: A string, can either be "train" or infer
             initial_state: initial state of decoder
-            encoder_memory: Hidden states of encoder of shape [batch_size, max_time, cell.output_size]
             input: (in case of mode=="train") A Tensor of shape [batch_size, TODO: ?
             input_lengths: (in case of mode=="train") A vector. Lengths of each sequence in a batch
             embeddings: (in case of mode=="infer") Embedding look-up table of shape [vocabulary_size, embedding_dim]
@@ -154,39 +223,50 @@ class LSTMDecoderWithAttention(object):
             outputs: a Tensor shaped: [batch_size, max_time, cell.output_size].
         """
 
+        output_logits = Dense(30522, use_bias=False)
         global helper
-        cell = self.cell()
         if mode == "train":
             helper = tf.contrib.seq2seq.TrainingHelper(
                 inputs=inputs,
                 sequence_length=input_lengths)
-        elif mode == "infer":
-            helper = tf.contrib.seq2seq.GreedyEmbeddingHelper(
-                embedding=embeddings,
-                start_tokens=tf.tile([special_symbols[0]], [self.batch_size]),
-                end_token=special_symbols[1])
+        # elif mode == "infer":
+        # helper = tf.contrib.seq2seq.GreedyEmbeddingHelper(
+        #     embedding=embeddings,
+        #     start_tokens=tf.tile([special_symbols[0]], [self.batch_size]),
+        #     end_token=special_symbols[1])
 
         attention_mechanism = tf.contrib.seq2seq.BahdanauAttention(
-            num_units=self.num_units,
+            num_units=50,
             memory=encoder_memory,
             normalize=True)
 
-        cell = tf.contrib.seq2seq.AttentionWrapper(
-            cell=cell,
+        self.cell[-1] = tf.contrib.seq2seq.AttentionWrapper(
+            cell=self.cell[-1],
             attention_mechanism=attention_mechanism,
-            alignment_history=False)
+            alignment_history=False,
+            initial_cell_state=initial_state[-1])
+
+        initial_state = [state for state in initial_state]
+        initial_state[-1] = self.cell[-1].zero_state(
+            batch_size=self.batch_size, dtype=tf.float32)
+        decoder_initial_state = tuple(initial_state)
+
+        cell = tf.nn.rnn_cell.MultiRNNCell(self.cell)
 
         decoder = tf.contrib.seq2seq.BasicDecoder(
             cell=cell,
             helper=helper,
-            initial_state=initial_state)
+            initial_state=decoder_initial_state,
+            output_layer=output_logits)
 
         final_outputs, final_state, final_sequence_lengths = tf.contrib.seq2seq.dynamic_decode(
             decoder=decoder,
             impute_finished=True,
-            maximum_iterations=40)
+            maximum_iterations=50)
         return final_outputs, final_state, final_sequence_lengths
 
+    def __call__(self, *args, **kwargs):
+        self.call(**kwargs)
 
 class TrainingHelperWithMemory(tf.contrib.seq2seq.TrainingHelper):
     """
@@ -208,18 +288,25 @@ class LSTMDecoderWithSelfAttention(object):
     sequence with attention on its own past hidden states.
     """
 
-    def __init__(self, num_units, batch_size, depth=1, dropout_probability=0.5):
+    def __init__(self, num_units, batch_size, cell=None, depth=1, dropout_probability=0.5):
         self.depth = depth
         self.dropout_probability = dropout_probability
         self.num_units = num_units
         self.batch_size = batch_size
+        if cell is None:
+            self.cell = self.multi_cell()
+        else:
+            self.cell = cell
 
     def cell(self):
-        cell = tf.nn.rnn_cell.LSTMCell(
-            num_units=self.num_units, use_peepholes=True, forget_bias=1.0)
-        tf.nn.rnn_cell.MultiRNNCell(
-            [tf.nn.rnn_cell.DropoutWrapper(
-                cell, output_keep_prob=self.dropout_probability) for j in range(self.depth)])
+        cell = tf.nn.rnn_cell.LSTMCell(num_units=self.num_units, use_peepholes=True, forget_bias=1.0)
+        return cell
+
+    def multi_cell(self):
+        cell = tf.nn.rnn_cell.MultiRNNCell([tf.nn.rnn_cell
+                                           .DropoutWrapper(self.cell(), output_keep_prob=self.dropout_probability) for j
+                                            in
+                                            range(self.depth)])
         return cell
 
     def call(self, mode, initial_state, encoder_memory, inputs, input_lengths, embeddings, special_symbols,

@@ -4,12 +4,13 @@ from simple_seq2seq import *
 import tensorflow as tf
 import numpy as np
 from random import randint
+import copy
 
 
 class Model1(object):
     def __init__(self, session, data, dictionary, embeddings, embeddings_dim=768, vocabulary_size=30522,
                  num_units=512,
-                 device="cpu:0",
+                 device="gpu:0",
                  construct_model=True):
 
         self.vocabulary_size = vocabulary_size
@@ -45,10 +46,11 @@ class Model1(object):
             self.embedding_init = tf.placeholder(tf.float32, [self.vocabulary_size, self.embeddings_dim])
             self.embedded_inputs = tf.nn.embedding_lookup(self.embedding_init, self.inputs)
             self.embedded_targets = tf.nn.embedding_lookup(self.embedding_init, self.targets)
+            self.encoder = SimpleLSTMEncoder(num_units=512, batch_size=self.batch_size, depth=2)
 
-            self.encoder = SimpleLSTMEncoder(num_units=512, batch_size=64, depth=1)
             # for the purpose of weight sharing
-            self.decoder = SimpleLSTMDecoder(num_units=512, cell=self.encoder.get_cell(), batch_size=64, depth=None)
+            # self.decoder = LSTMDecoderWithAttention(num_units=512, cell=None, batch_size=self.batch_size, depth=1)
+            self.decoder = LSTMDecoderWithAttention(num_units=512, cell=self.encoder.get_cell(), batch_size=self.batch_size, depth=2)
 
     def initialize(self):
         self.session.run(tf.global_variables_initializer())
@@ -80,13 +82,12 @@ class Model1(object):
     def next_batch(self):
         global next_target_batch, next_input_batch, target_batch_lengths
         if self.index < len(self.input_sequences):
-            next_input_batch = self.input_sequences[self.index:self.index + self.batch_size]
-            next_target_batch = self.target_sequences[self.index:self.index + self.batch_size]
+            next_input_batch = copy.deepcopy(self.input_sequences[self.index:self.index + self.batch_size])
+            next_target_batch = copy.deepcopy(self.target_sequences[self.index:self.index + self.batch_size])
 
             for i in range(self.batch_size):
-                if self.max_seq_length < len(next_target_batch[i]):
+                if self.max_seq_length < len(next_target_batch[i]) < 50:
                     self.max_seq_length = len(next_target_batch[i])
-            print(self.max_seq_length)
             target_batch_lengths = [0]
             for i in range(self.batch_size):
                 # length of each target sequence to be used in decoder
@@ -95,9 +96,6 @@ class Model1(object):
                 else:
                     target_batch_lengths += [len(next_target_batch[i])]
 
-                print(target_batch_lengths)
-                print(next_target_batch[i])
-                print("kkk")
 
                 # slicing
                 if len(next_input_batch[i]) > self.max_seq_length:
@@ -125,38 +123,45 @@ class Model1(object):
         with tf.device(self.device):
             with tf.Session.as_default(self.session):
                 output, final_state = self.encoder(self.embedded_inputs)
+                print("hhhh", final_state)
                 final_outputs, final_state, final_sequence_lengths = self.decoder.call(
                     mode='train',
                     initial_state=final_state,
+                    encoder_memory=output,
                     inputs=self.embedded_targets,
-                    input_lengths=self.target_lengths
-                )
-
+                    input_lengths=self.target_lengths)
+                # final_outputs, final_state, final_sequence_lengths = self.decoder.call(
+                #     mode='train',
+                #     initial_state=final_state,
+                #     inputs=self.embedded_targets,
+                #     input_lengths=self.target_lengths)
+                #
                 mask = tf.sequence_mask(self.target_lengths, dtype=tf.float32,name='masks')
 
                 _loss = tf.reduce_mean(tf.contrib.seq2seq.sequence_loss(logits=final_outputs.rnn_output,
                                                                         targets=self.targets, weights=mask,
                                                                         average_across_timesteps=True,
                                                                         average_across_batch=True))
-                global sidi
                 # setting the lr
                 optimizer = tf.train.AdamOptimizer(learning_rate=0.5, epsilon=0.01).minimize(_loss)
                 self.session.run(tf.global_variables_initializer())
-
+                loss_across = 0
                 for step in range(self.corpus_size - self.batch_size - 1):
                     next_input_batch, next_target_batch, target_batch_lengths = self.next_batch()
 
                     feed_dict = {self.targets: next_target_batch, self.inputs: next_input_batch,
                                  self.target_lengths: target_batch_lengths, self.embedding_init: self.embeddings}
                     loss, _ = self.session.run([_loss, optimizer], feed_dict=feed_dict)
-                    print('Average loss at step ', step, ': ', loss)
+                    loss_across +=loss
+                    if step % 10 == 0:
+                        print('Average loss at step ', step, ': ', loss)
 
 
-# with open("stories.pkl", 'rb') as file:
-#     data = pickle.load(file)
-#     file.close()
+with open("stories.pkl", 'rb') as file:
+    data = pickle.load(file)
+    file.close()
 
-data = [[[k for k in range(randint(j, 2 * j))] for j in range(randint(i, 2 * i))] for i in range(10, 30)]
+# data = [[[k for k in range(randint(j, 2 * j))] for j in range(randint(i, 2 * i))] for i in range(10, 30)]
 with open('embeddings_table.pkl', 'rb') as file:
     embeddings = pickle.load(file)
     file.close()
@@ -169,3 +174,5 @@ config.gpu_options.allow_growth = True
 sess = tf.Session(config=config)
 model1 = Model1(session=sess, data=data, dictionary=dictionary, embeddings=embeddings)
 model1.train()
+saver = tf.train.Saver()
+saver.save(sess,"conf/seq2seq_attentiononencoder_weightsharing_depth2.ckpt")
